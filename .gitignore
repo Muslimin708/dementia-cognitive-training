@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+dementia_app.db
+
+data/photos/*
+data/voice/*
