@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# SQLite database
+dementia_app.db
+
+# Local uploads
+data/photos/
+data/voice/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
