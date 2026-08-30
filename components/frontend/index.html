@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Annotation</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 16px;
+            font-family: Arial, sans-serif;
+            background: #f8fafc;
+            color: #172033;
+        }
+        .app { max-width: 900px; margin: 0 auto; }
+        .instructions, .panel {
+            margin-bottom: 14px;
+            padding: 14px;
+            border: 1px solid #bfdbfe;
+            border-radius: 10px;
+            background: #eff6ff;
+        }
+        .canvas-wrapper {
+            width: 100%;
+            overflow: auto;
+            border: 2px solid #94a3b8;
+            border-radius: 10px;
+            background: white;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            cursor: crosshair;
+        }
+        .status {
+            margin: 12px 0;
+            padding: 11px;
+            border-radius: 8px;
+            background: #f1f5f9;
+        }
+        .success { background: #f0fdf4; color: #166534; }
+        .error { background: #fef2f2; color: #991b1b; }
+        .hidden { display: none; }
+        label { display: block; margin: 10px 0 5px; font-weight: 700; }
+        input, textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #94a3b8;
+            border-radius: 7px;
+        }
+        textarea { min-height: 65px; resize: vertical; }
+        .buttons { display: flex; gap: 10px; margin-top: 12px; }
+        button {
+            flex: 1;
+            padding: 10px;
+            border: 0;
+            border-radius: 7px;
+            color: white;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .primary { background: #2563eb; }
+        .secondary { background: #475569; }
+        .success-button { background: #15803d; }
+        .danger { background: #dc2626; }
+        .card {
+            margin-top: 8px;
+            padding: 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            background: white;
+        }
+    </style>
+</head>
+<body>
+    <main class="app">
+        <section class="instructions">
+            <strong>Face annotation</strong>
+            <ol>
+                <li>Drag a rectangle around one face.</li>
+                <li>Enter the person's name and save the box.</li>
+                <li>Repeat for at least two different people.</li>
+                <li>Click Use These Annotations.</li>
+            </ol>
+        </section>
+
+        <div class="canvas-wrapper">
+            <canvas id="canvas"></canvas>
+        </div>
+
+
+        <div id="status" class="status">Waiting for an image from Streamlit.</div>
+
+
+        <section id="formPanel" class="panel hidden">
+            <label for="personName">Person name</label>
+            <input id="personName" type="text" maxlength="100">
+
+
+            <label for="description">Description, optional</label>
+            <textarea id="description" maxlength="300"></textarea>
+
+
+            <div class="buttons">
+                <button id="saveBox" class="primary" type="button">Save Face Box</button>
+                <button id="cancelBox" class="secondary" type="button">Cancel</button>
+            </div>
+        </section>
+
+        <section class="panel">
+            <strong>Saved annotations</strong>
+            <div id="annotationList">No annotations saved.</div>
+        </section>
+        <div class="buttons">
+            <button id="submit" class="success-button" type="button">Use These Annotations</button>
+            <button id="clear" class="danger" type="button">Clear All</button>
+        </div>
+    </main>
+
+    <script>
+        const RENDER = "streamlit:render";
+        const READY = "streamlit:componentReady";
+        const SET_VALUE = "streamlit:setComponentValue";
+        const SET_HEIGHT = "streamlit:setFrameHeight";
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const statusBox = document.getElementById("status");
+        const formPanel = document.getElementById("formPanel");
+        const personName = document.getElementById("personName");
+        const description = document.getElementById("description");
+        const list = document.getElementById("annotationList");
+        const image = new Image();
+        let imageSource = "";
+        let annotations = [];
+        let drawing = false;
+        let start = null;
+        let draft = null;
+
+
+        function send(type, data = {}) {
+            window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
+        }
+
+        function resizeFrame() {
+            send(SET_HEIGHT, {
+                height: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight) + 20
+            });
+        }
+        function setStatus(message, kind = "") {
+            statusBox.textContent = message;
+            statusBox.className = `status ${kind}`;
+            resizeFrame();
+        }
+
+        function point(event) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: (event.clientX - rect.left) * canvas.width / rect.width,
+                y: (event.clientY - rect.top) * canvas.height / rect.height
+            };
+        }
+
+        function makeBox(a, b) {
+            return {
+                left: Math.min(a.x, b.x),
+                top: Math.min(a.y, b.y),
+                width: Math.abs(b.x - a.x),
+                height: Math.abs(b.y - a.y)
+            };
+        }
+        function drawBox(box, label, color) {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = Math.max(3, canvas.width * 0.003);
+            ctx.strokeRect(box.left, box.top, box.width, box.height);
+            ctx.fillStyle = color;
+            ctx.font = `${Math.max(16, canvas.width * 0.018)}px Arial`;
+            ctx.fillText(label, box.left + 4, Math.max(18, box.top - 5));
+        }
+
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (image.complete && image.naturalWidth) {
+                ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+            }
+            annotations.forEach((item, index) => {
+                drawBox(item.pixelBox, `${index + 1}. ${item.person_name}`, "#15803d");
+            });
+            if (draft) drawBox(draft, "New face", "#dc2626");
+        }
+
+
+        function renderList() {
+            list.innerHTML = "";
+            if (!annotations.length) {
+                list.textContent = "No annotations saved.";
+                resizeFrame();
+                return;
+            }
+            annotations.forEach((item, index) => {
+                const card = document.createElement("div");
+                card.className = "card";
+                card.textContent = `${index + 1}. ${item.person_name}`;
+                list.appendChild(card);
+            });
+            resizeFrame();
+        }
+        window.addEventListener("message", event => {
+            if (!event.data || event.data.type !== RENDER) return;
+            const source = (event.data.args || {}).image_data || "";
+            if (!source) {
+                setStatus("No image was received.", "error");
+                return;
+            }
+            if (source !== imageSource) {
+                imageSource = source;
+                annotations = [];
+                draft = null;
+                image.src = source;
+            }
+        });
+        image.onload = () => {
+            canvas.width = image.naturalWidth;
+            canvas.height = image.naturalHeight;
+            redraw();
+            renderList();
+            setStatus("Image loaded. Drag a box around a face.", "success");
+        };
+        image.onerror = () => setStatus("The image could not be loaded.", "error");
+        canvas.addEventListener("mousedown", event => {
+            if (!image.naturalWidth) return;
+            drawing = true;
+            start = point(event);
+            draft = null;
+            formPanel.classList.add("hidden");
+        });
+        canvas.addEventListener("mousemove", event => {
+            if (!drawing) return;
+            draft = makeBox(start, point(event));
+            redraw();
+        });
+
+        canvas.addEventListener("mouseup", event => {
+            if (!drawing) return;
+            drawing = false;
+            draft = makeBox(start, point(event));
+            if (draft.width < canvas.width * 0.02 || draft.height < canvas.height * 0.02) {
+                draft = null;
+                redraw();
+                setStatus("The box is too small. Draw a larger box.", "error");
+                return;
+            }
+            personName.value = "";
+            description.value = "";
+            formPanel.classList.remove("hidden");
+            personName.focus();
+            setStatus("Enter the person's name and save the face box.");
+        });
+        document.getElementById("saveBox").addEventListener("click", () => {
+            const name = personName.value.trim();
+            if (!draft || !name) {
+                setStatus("A face box and person name are required.", "error");
+                return;
+            }
+            annotations.push({
+                person_name: name,
+                description: description.value.trim(),
+                x: Number(((draft.left + draft.width / 2) / canvas.width).toFixed(6)),
+                y: Number(((draft.top + draft.height / 2) / canvas.height).toFixed(6)),
+                width: Number((draft.width / canvas.width).toFixed(6)),
+                height: Number((draft.height / canvas.height).toFixed(6)),
+                pixelBox: { ...draft }
+            });
+            draft = null;
+            formPanel.classList.add("hidden");
+            redraw();
+            renderList();
+            setStatus("Face box saved. Draw another face.", "success");
+        });
+        document.getElementById("cancelBox").addEventListener("click", () => {
+            draft = null;
+            formPanel.classList.add("hidden");
+            redraw();
+            setStatus("Selection cancelled.");
+        });
+
+
+        document.getElementById("clear").addEventListener("click", () => {
+            annotations = [];
+            draft = null;
+            formPanel.classList.add("hidden");
+            send(SET_VALUE, { value: [], dataType: "json" });
+            redraw();
+            renderList();
+            setStatus("All annotations cleared.");
+        });
+
+
+        document.getElementById("submit").addEventListener("click", () => {
+            const uniqueNames = new Set(
+                annotations.map(item => item.person_name.trim().toLowerCase())
+            );
+            if (annotations.length < 2 || uniqueNames.size < 2) {
+                setStatus("Save at least two different people first.", "error");
+                return;
+            }
+            const result = annotations.map(({ pixelBox, ...item }) => item);
+            send(SET_VALUE, { value: result, dataType: "json" });
+            setStatus(`${result.length} annotations sent to Streamlit.`, "success");
+        });
+
+
+        send(READY, { apiVersion: 1 });
+        resizeFrame();
+    </script>
+</body>
+</html>

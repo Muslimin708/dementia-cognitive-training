@@ -368,14 +368,15 @@ def _render_saved_members(patient_id):
 
 
 def _render_recent_event_form(patient_id):
-    """Add a recent event for the currently connected patient."""
+    """Add an annotated recent event for the connected patient."""
     st.subheader("Add Recent Event")
 
     members = get_family_members(patient_id)
 
     if not members:
         st.info(
-            "Add at least one family member before creating a recent event."
+            "Add at least one family member before creating "
+            "a recent event."
         )
         return
 
@@ -408,77 +409,239 @@ def _render_recent_event_form(patient_id):
         st.image(
             photo,
             caption="Recent event photo preview",
-            use_container_width=True,
+            width="stretch",
         )
-        st.markdown("#### Family members in this event")
+
+        st.markdown("#### Annotate Faces")
+
+        st.info(
+            "Draw a rectangle around each person's face. "
+            "Save at least two different people, then click "
+            "'Use These Annotations'."
+        )
+
+        component_value = render_face_annotation(
+            uploaded_file=photo,
+            key="recent_event_face_annotation",
+            height=1000,
+        )
+
+        if isinstance(component_value, list):
+            annotations = [
+                annotation
+                for annotation in component_value
+                if isinstance(annotation, dict)
+            ]
+
+        if annotations:
+            st.success(
+                f"{len(annotations)} annotation record(s) "
+                "were received from the component."
+            )
+
+            for annotation_number, annotation in enumerate(
+                annotations,
+                start=1,
+            ):
+                person_name = str(
+                    annotation.get("person_name", "")
+                ).strip()
+
+                st.write(
+                    f"{annotation_number}. "
+                    f"{person_name or 'Unnamed person'}"
+                )
+        else:
+            st.warning(
+                "No valid annotations have been returned yet."
+            )
+
+    st.markdown("#### Family members in this event")
 
     selected_member_ids = []
 
     for member in members:
-        member_id, member_name, relationship, _, _ = member
+        (
+            member_id,
+            member_name,
+            relationship,
+            _,
+            _,
+        ) = member
 
         selected = st.checkbox(
-            f"{member_name} ({relationship or 'Relationship not provided'})",
+            (
+                f"{member_name} "
+                f"({relationship or 'Relationship not provided'})"
+            ),
             key=f"event_member_{member_id}",
         )
 
         if selected:
             selected_member_ids.append(member_id)
 
-    if st.button(
+    save_event = st.button(
         "Save Recent Event",
         key="save_recent_event",
-        use_container_width=True,
-    ):
-        if not event_name.strip():
-            st.error("Please enter an event name.")
-            return
+        width="stretch",
+    )
 
-        if photo is None:
-            st.error("Please upload an event photo.")
-            return
+    if not save_event:
+        return
 
-        if not selected_member_ids:
-            st.error("Select at least one family member in the event.")
-            return
+    cleaned_event_name = event_name.strip()
+    cleaned_description = description.strip()
 
-        event_photo_path = None
+    if not cleaned_event_name:
+        st.error("Please enter an event name.")
+        return
+
+    if photo is None:
+        st.error("Please upload an event photo.")
+        return
+
+    if not selected_member_ids:
+        st.error(
+            "Select at least one family member in the event."
+        )
+        return
+
+    valid_annotations = []
+
+    for annotation in annotations:
+        person_name = str(
+            annotation.get("person_name", "")
+        ).strip()
+
+        annotation_description = str(
+            annotation.get("description", "")
+        ).strip()
+
+        if not person_name:
+            continue
 
         try:
-            event_photo_path = _save_upload(
-                photo,
-                "data/recent_events",
-                patient_id,
+            x = float(annotation.get("x"))
+            y = float(annotation.get("y"))
+            width = float(annotation.get("width"))
+            height = float(annotation.get("height"))
+        except (TypeError, ValueError):
+            continue
+
+        if not 0 <= x <= 1:
+            continue
+
+        if not 0 <= y <= 1:
+            continue
+
+        if not 0 < width <= 1:
+            continue
+
+        if not 0 < height <= 1:
+            continue
+
+        if x - width / 2 < 0:
+            continue
+
+        if x + width / 2 > 1:
+            continue
+
+        if y - height / 2 < 0:
+            continue
+
+        if y + height / 2 > 1:
+            continue
+
+        valid_annotations.append(
+            {
+                "person_name": person_name,
+                "description": annotation_description,
+                "x": round(x, 6),
+                "y": round(y, 6),
+                "width": round(width, 6),
+                "height": round(height, 6),
+            }
+        )
+
+    unique_names = {
+        annotation["person_name"].casefold()
+        for annotation in valid_annotations
+    }
+
+    if len(valid_annotations) < 2:
+        st.error(
+            "At least two valid face annotations are required "
+            "before this event can be used by the Missing Family "
+            "Member game."
+        )
+        return
+
+    if len(unique_names) < 2:
+        st.error(
+            "The annotations must identify at least two "
+            "different people."
+        )
+        return
+
+    # Prevent Step 1 test data from being saved.
+    if any(
+        annotation["person_name"] == "Component Test"
+        for annotation in valid_annotations
+    ):
+        st.error(
+            "The current component is still running in Step 1 "
+            "test mode. Do not save the event until the real "
+            "drawing interface is installed."
+        )
+        return
+
+    event_photo_path = None
+    event_id = None
+
+    try:
+        event_photo_path = _save_upload(
+            upload=photo,
+            folder="data/recent_events",
+            prefix=patient_id,
+        )
+
+        event_id = add_recent_event(
+            patient_id=patient_id,
+            event_name=cleaned_event_name,
+            event_date=str(event_date),
+            description=cleaned_description,
+            photo_path=event_photo_path,
+            family_member_ids=selected_member_ids,
+        )
+
+        for annotation in valid_annotations:
+            add_event_face_annotation(
+                event_id=event_id,
+                person_name=annotation["person_name"],
+                description=annotation["description"],
+                x=annotation["x"],
+                y=annotation["y"],
+                width=annotation["width"],
+                height=annotation["height"],
             )
 
-            event_id = add_recent_event(
-                patient_id=patient_id,
-                event_name=event_name.strip(),
-                event_date=str(event_date),
-                description=description.strip(),
-                photo_path=event_photo_path,
-                family_member_ids=selected_member_ids,
-            )
+        st.success(
+            f"Recent event '{cleaned_event_name}' was saved "
+            f"with {len(valid_annotations)} face annotations."
+        )
 
-            for annotation in annotations:
-                add_event_face_annotation(
-                    event_id=event_id,
-                    person_name=annotation.get("person_name", ""),
-                    description=annotation.get("description", ""),
-                    x=annotation.get("x", 0),
-                    y=annotation.get("y", 0),
-                    width=annotation.get("width", 0),
-                    height=annotation.get("height", 0),
-                )
+    except Exception as error:
+        if event_id is not None:
+            try:
+                delete_recent_event(event_id)
+            except Exception:
+                pass
 
-            st.success(
-                f"Recent event '{event_name.strip()}' was saved successfully."
-            )
+        _delete_file(event_photo_path)
 
-        except Exception as error:
-            _delete_file(event_photo_path)
-            st.error(f"The recent event could not be saved: {error}")
-
+        st.error(
+            f"The recent event could not be saved: {error}"
+        )
 
 def _render_saved_events(patient_id):
     """Display and delete recent events for the connected patient."""
